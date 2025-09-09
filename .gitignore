@@ -1,4 +1,10 @@
-.venv
-*.csv
-temp
-logs
+temp/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+logs/
+*.log
+.env
+.idea/
+.vscode/
