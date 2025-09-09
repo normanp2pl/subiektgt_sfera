@@ -43,7 +43,7 @@ def get_subiekt() -> any:
     gt.Baza = os.getenv("SFERA_SQL_DB", "sfera_demo")
     gt.Operator = os.getenv("SFERA_OPERATOR", "admin")
     gt.OperatorHaslo = os.getenv("SFERA_OPERATOR_PASSWORD", "admin")
-    sub = win32.Dispatch(gt.Uruchom(1, 1))
+    sub = win32.Dispatch(gt.Uruchom(1, 4))
     return sub
 
 

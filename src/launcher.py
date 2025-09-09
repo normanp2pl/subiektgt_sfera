@@ -11,7 +11,7 @@ from tkinter import messagebox, ttk
 APPS = [
     {
         "id": "drukuj_fs",
-        "label": "Drukowanie FS",
+        "label": "Eksport FS do PDF wg wzorca",
         "script": "drukuj_fs.py",
     },
     {

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Drukowanie FS z wyborem wzorca per kontrahent (zapamiętywane w CSV) + launcher dialogi.
+Drukowanie/export FS z wyborem wzorca per kontrahent (zapamiętywane w CSV) + launcher dialogi.
 """
 
 # ===== Standard library =====
@@ -10,6 +10,7 @@ import argparse
 import csv
 import logging
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -22,7 +23,7 @@ import win32print
 from pywintypes import com_error
 
 import logowanie
-from gui import ask_delay_seconds, choose_wzor_wydruku, show_completion_dialog
+from gui import choose_wzor_wydruku, show_completion_dialog, choose_output_dir
 from utils import get_subiekt, run_sql, select_docs_prev_month
 
 logger = logging.getLogger(__name__)
@@ -166,7 +167,21 @@ def drukuj_wg_ustawien(
 
     su_dokument.DrukujWgUstawien(ust)
 
-
+def safe_filename(name: str, ext="pdf", maxlen=150) -> str:
+    name = re.sub(r'[\x00-\x1f]+', '', name)                # usuń znaki sterujące
+    name = re.sub(r'[\\/:*?"<>|]+', '-', name)              # zamień niedozwolone
+    name = re.sub(r'\s+', ' ', name).strip().rstrip(' .')   # zbędne spacje/kropki
+    reserved = {"CON","PRN","AUX","NUL","COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
+                "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"}
+    stem = name.split('.', 1)[0]
+    if stem.upper() in reserved:
+        name = f"_{name}"
+    if len(name) > maxlen:
+        base, dot, ext_old = name.partition('.')
+        ext_suffix = f".{ext_old}" if dot else ""
+        keep = max(1, maxlen - len(ext_suffix))
+        name = base[:keep] + ext_suffix
+    return f"{name}.{ext}"
 # ============================================================================ #
 #                                     MAIN                                     
 # ============================================================================ #
@@ -179,7 +194,10 @@ def main():
     args = ap.parse_args()
 
     storage_path = args.storage if args.storage else STORAGE_PATH
-    printer_name = args.printer if args.printer else DEFAULT_PRINTER
+    # printer_name = args.printer if args.printer else DEFAULT_PRINTER
+
+    default_dir = (Path.cwd().parent / "wydruki")  # ..\wydruki
+    default_dir.mkdir(parents=True, exist_ok=True)
 
     pythoncom.CoInitialize()
     sub = None
@@ -224,20 +242,25 @@ def main():
             wz_kontr[kh_id] = int(wyb["wzw_Id"]) if wyb else None
 
         # opóźnienie między drukami
-        delay = ask_delay_seconds(default=5) or 0
+        # delay = ask_delay_seconds(default=5) or 0
 
-        # drukowanie
+        # drukowanie/export
+        out_dir = choose_output_dir(default_dir)
         for i, d in enumerate(docs, start=1):
             wzw_id = wz_kontr.get(int(d.KontrahentId))
             if not wzw_id:
                 logger.warning("Pomijam %s – brak wybranego wzorca.", getattr(d, "NumerPelny", "<bez numeru>"))
                 continue
             wz_name = wz_by_id.get(wzw_id, f"wzorzec {wzw_id}")
-            logger.info("Drukuję (%d/%d) %s wzorem %s", i, len(docs), d.NumerPelny, wz_name)
-            drukuj_wg_ustawien(d, wzw_id=wzw_id, printer_name=printer_name, ilosc_kopii=1)
-            if delay and i < len(docs):
-                logger.info("  ... czekam %d sekund ...", delay)
-                time.sleep(delay)
+            fname = safe_filename(str(d.NumerPelny))
+            fullpath = str(out_dir / fname)
+            logger.info("Exportuję (%d/%d) %s wzorem %s do pliku %s", i, len(docs), d.NumerPelny, wz_name, fullpath)
+            d.DrukujDoPlikuWgWzorca(wzw_id, fullpath, 0)  # 0 = PDF
+            # drukuj_wg_ustawien(d, wzw_id=wzw_id, printer_name=printer_name, ilosc_kopii=1)
+
+            # if delay and i < len(docs):
+            #     logger.info("  ... czekam %d sekund ...", delay)
+            #     time.sleep(delay)
 
     except com_error as e:
         logger.exception("Błąd COM: %s", e)

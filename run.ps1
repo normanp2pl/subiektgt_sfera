@@ -36,7 +36,7 @@ if (-not (Test-Path -LiteralPath $venvPy)) {
   & $venvPy -m pip install --upgrade pip
 
   if (Test-Path -LiteralPath "src\requirements.txt") {
-    & $venvPy -m pip install -r requirements.txt
+    & $venvPy -m pip install -r src\requirements.txt
   }
 }
 

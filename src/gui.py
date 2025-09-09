@@ -372,3 +372,14 @@ def ask_delay_seconds(
 
     root.mainloop()
     return result["value"]
+
+def choose_output_dir(default_dir: Path) -> Path:
+    try:
+        from tkinter import Tk, filedialog
+        root = Tk(); root.withdraw()
+        chosen = filedialog.askdirectory(initialdir=str(default_dir), title="Wybierz folder zapisu")
+        root.destroy()
+        return Path(chosen) if chosen else default_dir
+    except Exception:
+        # brak tkinter/GUI — użyj domyślnego
+        return default_dir
