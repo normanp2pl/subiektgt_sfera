@@ -1,27 +1,104 @@
-import os, csv, tempfile
-from pathlib import Path
+# -*- coding: utf-8 -*-
+"""
+Drukowanie FS z wyborem wzorca per kontrahent (zapamiętywane w CSV) + launcher dialogi.
+"""
+
+# ===== Standard library =====
+from __future__ import annotations
 import argparse
-import pywintypes
-from datetime import datetime, timedelta, time
+import builtins
+import csv
+import logging
+import os
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, time as dtime
+from pathlib import Path
+from typing import Callable, Optional
+
+# ===== Third-party =====
 import pythoncom
+import pywintypes
 import win32com.client as win32
+import win32print
 from pywintypes import com_error
 import tkinter as tk
 from tkinter import ttk, messagebox
-from typing import Callable, Optional
 
-# Stałe
-gtaUruchom = 1   # (4 = gtaUruchomWTle jeśli chcesz bez interfejsu)
-storage_path = "wzorce_kontrahentow.csv"  # można zmienić na None aby użyć domyślnej ścieżki
+# ============================================================================ #
+#                                   KONFIG                                     
+# ============================================================================ #
+
+# Sfera / Subiekt
+GTA_URUCHOM_UI = 1  # 4 = gtaUruchomWTle (bez interfejsu) – zwykle chcemy 1
+
+# Drukarka: None => domyślna systemowa; albo wpisz nazwę, np. "Microsoft Print to PDF"
+DEFAULT_PRINTER = os.getenv("SFERA_PRINTER_NAME") or None
+DEFAULT_PRINTER = "Microsoft Print to PDF" if DEFAULT_PRINTER == "None" else DEFAULT_PRINTER
+
+# Ścieżka do CSV z mapowaniem kh_id -> wzw_id (None => %LOCALAPPDATA%\Subiektowe\wzorce_kontrahentow.csv)
+STORAGE_PATH: Optional[str] = "wzorce_kontrahentow.csv"
+
+# Nazwa pliku logu: prefiks + data
+LOG_PREFIX = "FS_"
+
+# ============================================================================ #
+#                                  LOGOWANIE                                   
+# ============================================================================ #
+
+def setup_logging(
+    log_dir: str = "logs",
+    level: int = logging.INFO,
+    echo_to_console: bool = True,
+    capture_print: bool = True,
+) -> str:
+    """
+    Logi do pliku logs/<PREFIX>YYYY-MM-DD.log (append) + opcjonalnie na konsolę.
+    Przechwytuje print() -> logger.info() bez ręcznego echo na stdout (brak duplikatów).
+    """
+    date_str = datetime.now().strftime(f"{LOG_PREFIX}%Y-%m-%d")
+    log_path = Path(log_dir) / f"{date_str}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    ]
+    if echo_to_console:
+        handlers.append(logging.StreamHandler(sys.stdout))
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=handlers,
+        force=True,
+    )
+
+    if capture_print:
+        _orig_print = builtins.print
+
+        def print_to_logger(*args, **kwargs):
+            file = kwargs.get("file")
+            if file not in (None, sys.stdout, sys.stderr):
+                return _orig_print(*args, **kwargs)
+            sep = kwargs.get("sep", " ")
+            msg = sep.join(str(a) for a in args)
+            logging.getLogger().info(msg)
+
+        builtins.print = print_to_logger
+
+    return str(log_path)
+
+
+logger = logging.getLogger(__name__)
+
+# ============================================================================ #
+#                          POMOCNICZE: CZAS / ŚCIEŻKI                          
+# ============================================================================ #
+
 def to_com_time(dt: datetime):
     return pywintypes.Time(dt)
-
-def parse_args():
-    ap = argparse.ArgumentParser()
-    # ap.add_argument("--new-date", required=True)
-    ap.add_argument("--dry-run", action="store_true")
-    return ap.parse_args()
-
 
 def _default_storage_path() -> str:
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.getcwd()
@@ -29,79 +106,127 @@ def _default_storage_path() -> str:
     folder.mkdir(parents=True, exist_ok=True)
     return str(folder / "wzorce_kontrahentow.csv")
 
+def resolve_storage_path(path: Optional[str]) -> str:
+    return path if path else _default_storage_path()
 
+# ============================================================================ #
+#                      CSV: zapamiętany wzorzec per kontrahent                 
+# ============================================================================ #
 
-def load_mapping_csv(path: str | None = None) -> dict[int, int]:
+def load_mapping_csv(path: Optional[str] = None) -> dict[int, int]:
     """Wczytuje mapowanie kh_id -> wzw_id z CSV."""
-    if path is None:
-        path = _default_storage_path()
-    mapping: dict[int, int] = {}
-    p = Path(path)
+    p = Path(resolve_storage_path(path))
     if not p.exists():
-        return mapping
+        return {}
+    mapping: dict[int, int] = {}
     with p.open("r", encoding="utf-8-sig", newline="") as f:
         r = csv.reader(f)
         for row in r:
-            if not row or len(row) < 2:
+            if not row or row[0] == "kh_id":
                 continue
             try:
-                kh_id = int(row[0])
-                wzw_id = int(row[1])
-                mapping[kh_id] = wzw_id
-            except ValueError:
-                # pomiń błędne wiersze
+                mapping[int(row[0])] = int(row[1])
+            except Exception:
                 continue
     return mapping
 
-
-def save_mapping_csv(mapping: dict[int, int], path: str | None = None) -> None:
+def save_mapping_csv(mapping: dict[int, int], path: Optional[str] = None) -> None:
     """Zapisuje mapowanie kh_id -> wzw_id do CSV (atomowo)."""
-    if path is None:
-        path = _default_storage_path()
-    p = Path(path)
+    p = Path(resolve_storage_path(path))
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="wzorce_", suffix=".csv", dir=str(p.parent))
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
-            # nagłówek (opcjonalny) – nie przeszkadza przy wczytywaniu
             w.writerow(["kh_id", "wzw_id"])
             for kh_id, wzw_id in mapping.items():
                 w.writerow([kh_id, wzw_id])
-        os.replace(tmp_path, p)  # atomowa podmiana
+        os.replace(tmp_path, p)
     finally:
-        # jeżeli replace się nie udał, posprzątaj tmp:
         if os.path.exists(tmp_path) and not os.path.samefile(tmp_path, p):
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
 
-
-def get_saved_wzor(kh_id: int, path: str | None = None) -> int | None:
+def get_saved_wzor(kh_id: int, path: Optional[str] = None) -> Optional[int]:
     return load_mapping_csv(path).get(kh_id)
 
-
-def set_saved_wzor(kh_id: int, wzw_id: int, path: str | None = None) -> None:
+def set_saved_wzor(kh_id: int, wzw_id: int, path: Optional[str] = None) -> None:
     m = load_mapping_csv(path)
     m[int(kh_id)] = int(wzw_id)
     save_mapping_csv(m, path)
 
+# ============================================================================ #
+#                        ADO/COM: zapytania pomocnicze                          
+# ============================================================================ #
 
-def choose_wzor_wydruku(nazwa_kontrahenta: str,
-                        wzorce: list[dict],
-                        num: int, 
-                        total: int,
-                        kh_id: int | None = None,
-                        preselect_wzw_id: int | None = None,
-                        remember_default: bool = True,
-                        on_remember: Callable[[int], None] | None = None) -> dict | None:
+def run_sql(spAplikacja, sql: str) -> list[dict]:
     """
-    Okno wyboru wzoru wydruku.
-    - preselect_wzw_id: wstępnie zaznacz ten wzór (jeśli istnieje na liście)
-    - on_remember: callback (wzw_id:int) wywoływany gdy checkbox zaznaczony i user zatwierdzi
+    Wykonuje dowolny SELECT w Subiekcie przez ADO/COM.
+    Zwraca listę słowników: [{kolumna: wartość, ...}, ...]
     """
-    items = []
+    conn = spAplikacja.Aplikacja.Baza.Polaczenie  # ADODB.Connection
+    rs = win32.Dispatch("ADODB.Recordset")
+    # adUseClient=3, adOpenStatic=3, adLockReadOnly=1, adCmdText=1
+    rs.CursorLocation = 3
+    rs.Open(sql, conn, 3, 1, 1)
+
+    results: list[dict] = []
+    field_names = [f.Name for f in rs.Fields]
+    while not rs.EOF:
+        results.append({name: rs.Fields[name].Value for name in field_names})
+        rs.MoveNext()
+    rs.Close()
+    return results
+
+def fetch_wzorce_fs(spAplikacja) -> list[dict]:
+    return run_sql(
+        spAplikacja,
+        """
+        SELECT wz.wzw_Id, wz.wzw_Nazwa
+          FROM wy_Wzorzec wz
+          JOIN wy_Typ wt ON wz.wzw_Typ = wt.wtp_Id
+         WHERE wt.wtp_Nazwa = 'Faktura sprzedaży'
+         ORDER BY wz.wzw_Nazwa
+        """,
+    )
+
+def fetch_kontrahenci_basic(spAplikacja) -> dict[int, str]:
+    rows = run_sql(
+        spAplikacja,
+        """
+        SELECT k.kh_Id,
+               a.adr_Nazwa       AS Nazwa,
+               a.adr_Adres       AS Adres,
+               a.adr_Miejscowosc AS Miejscowosc
+          FROM kh__Kontrahent k
+          JOIN adr__Ewid a ON k.kh_Id = a.adr_IdObiektu
+         WHERE a.adr_TypAdresu = 1
+        """,
+    )
+    return {
+        int(r["kh_Id"]): f"{r['Nazwa']}, {r['Adres']}, {r['Miejscowosc']}"
+        for r in rows
+    }
+
+# ============================================================================ #
+#                               DIALOGI TKINTER                                
+# ============================================================================ #
+
+def choose_wzor_wydruku(
+    nazwa_kontrahenta: str,
+    wzorce: list[dict],
+    num: int,
+    total: int,
+    kh_id: Optional[int] = None,
+    preselect_wzw_id: Optional[int] = None,
+    remember_default: bool = True,
+    on_remember: Optional[Callable[[int], None]] = None,
+) -> Optional[dict]:
+    """Okno wyboru wzorca wydruku."""
+    # normalize
+    items: list[dict] = []
     for w in wzorce or []:
         try:
             items.append({"wzw_Id": int(w["wzw_Id"]), "wzw_Nazwa": str(w["wzw_Nazwa"])})
@@ -111,26 +236,28 @@ def choose_wzor_wydruku(nazwa_kontrahenta: str,
         messagebox.showwarning("Brak wzorców", "Nie znaleziono żadnych wzorców wydruku.")
         return None
 
-    selection_holder = {"value": None}
+    selection_holder: dict[str, Optional[dict]] = {"value": None}
 
     root = tk.Tk()
     root.title(f"Wybierz wzór wydruku ({num}/{total})")
     root.geometry("700x520")
     root.minsize(560, 400)
+    root.lift()
     root.attributes("-topmost", True)
     root.after(300, lambda: root.attributes("-topmost", False))
+    root.focus_force()
+    root.grab_set()
 
     frame = ttk.Frame(root, padding=12)
     frame.pack(fill="both", expand=True)
 
-    lbl = ttk.Label(
+    ttk.Label(
         frame,
         text=f'Wybierz wzór wydruku dla kontrahenta: "{nazwa_kontrahenta}"',
         font=("Segoe UI", 11, "bold"),
         wraplength=650,
         justify="left",
-    )
-    lbl.pack(anchor="w", pady=(0, 8))
+    ).pack(anchor="w", pady=(0, 8))
 
     # filtr
     filter_frame = ttk.Frame(frame)
@@ -160,6 +287,29 @@ def choose_wzor_wydruku(nazwa_kontrahenta: str,
         for it in filtered:
             tree.insert("", "end", values=(it["wzw_Id"], it["wzw_Nazwa"]))
 
+    def _preselect(wzw_id: Optional[int]):
+        try:
+            if wzw_id is None:
+                first = tree.get_children()
+                if first:
+                    tree.selection_set(first[0])
+                    tree.focus(first[0])
+                return
+            for iid in tree.get_children():
+                vals = tree.item(iid)["values"]
+                if int(vals[0]) == int(wzw_id):
+                    tree.selection_set(iid)
+                    tree.focus(iid)
+                    tree.see(iid)
+                    return
+            # fallback: pierwszy
+            first = tree.get_children()
+            if first:
+                tree.selection_set(first[0])
+                tree.focus(first[0])
+        except Exception:
+            pass
+
     def on_filter_change(*_):
         q = filter_var.get().strip().lower()
         filtered.clear()
@@ -170,7 +320,6 @@ def choose_wzor_wydruku(nazwa_kontrahenta: str,
                 if q in it["wzw_Nazwa"].lower() or q in str(it["wzw_Id"]):
                     filtered.append(it)
         refresh_tree()
-        # reselekcja
         _preselect(preselect_wzw_id)
 
     filter_var.trace_add("write", on_filter_change)
@@ -178,8 +327,7 @@ def choose_wzor_wydruku(nazwa_kontrahenta: str,
     # checkbox "Zapamiętaj"
     remember_var = tk.BooleanVar(value=bool(remember_default))
     chk_text = f"Zapamiętaj wybór dla kontrahenta (ID: {kh_id})" if kh_id is not None else "Zapamiętaj wybór"
-    chk = ttk.Checkbutton(frame, text=chk_text, variable=remember_var)
-    chk.pack(anchor="w", pady=(8, 0))
+    ttk.Checkbutton(frame, text=chk_text, variable=remember_var).pack(anchor="w", pady=(8, 0))
 
     # przyciski
     btns = ttk.Frame(frame)
@@ -215,55 +363,25 @@ def choose_wzor_wydruku(nazwa_kontrahenta: str,
     root.bind("<Return>", on_return)
     root.bind("<Escape>", on_escape)
 
-    # wypełnienie i preselekcja
     refresh_tree()
-
-    def _preselect(wzw_id: int | None):
-        try:
-            if wzw_id is None:
-                # zaznacz pierwszy
-                first = tree.get_children()
-                if first:
-                    tree.selection_set(first[0])
-                    tree.focus(first[0])
-                return
-            for iid in tree.get_children():
-                vals = tree.item(iid)["values"]
-                if int(vals[0]) == int(wzw_id):
-                    tree.selection_set(iid)
-                    tree.focus(iid)
-                    tree.see(iid)
-                    return
-            # jeśli nie znaleziono - pierwszy
-            first = tree.get_children()
-            if first:
-                tree.selection_set(first[0])
-                tree.focus(first[0])
-        except Exception:
-            pass
-
     _preselect(preselect_wzw_id)
     filter_entry.focus_set()
 
     root.mainloop()
-    return selection_holder["value"]
+    return selection_holder["value"]  # dict lub None
 
 
-
-def ask_delay_seconds(default: int = 5,
-                      min_seconds: int = 0,
-                      max_seconds: int = 600) -> Optional[int]:
-    """
-    Pokazuje okno z pytaniem o opóźnienie (sekundy) między wydrukami.
-    Zwraca liczbę sekund (int) lub None jeśli anulowano.
-    """
+def ask_delay_seconds(
+    default: int = 5,
+    min_seconds: int = 0,
+    max_seconds: int = 600,
+) -> Optional[int]:
+    """Modalny dialog: opóźnienie (sekundy) między wydrukami."""
     result = {"value": None}
 
     root = tk.Tk()
     root.title("Opóźnienie między wydrukami")
     root.resizable(False, False)
-
-    # wyeksponuj okno i przejmij focus (modalne)
     root.lift()
     root.attributes("-topmost", True)
     root.after(250, lambda: root.attributes("-topmost", False))
@@ -277,10 +395,10 @@ def ask_delay_seconds(default: int = 5,
         frm,
         text="Ile sekund program ma czekać między drukowaniami?",
         font=("Segoe UI", 10, "bold"),
-        wraplength=360
+        wraplength=360,
     ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
-    ttk.Label(frm, text="Sekundy:").grid(row=1, column=0, sticky="e", padx=(0,6))
+    ttk.Label(frm, text="Sekundy:").grid(row=1, column=0, sticky="e", padx=(0, 6))
 
     val_var = tk.StringVar(value=str(default))
 
@@ -293,10 +411,9 @@ def ask_delay_seconds(default: int = 5,
         return False
 
     vcmd = (root.register(validate), "%P")
-    entry = ttk.Entry(frm, textvariable=val_var, width=8,
-                      justify="center", validate="key", validatecommand=vcmd)
+    entry = ttk.Entry(frm, textvariable=val_var, width=8, justify="center", validate="key", validatecommand=vcmd)
     entry.grid(row=1, column=1, sticky="w")
-    ttk.Label(frm, text=f"(min {min_seconds}, max {max_seconds})").grid(row=1, column=2, sticky="w", padx=(6,0))
+    ttk.Label(frm, text=f"(min {min_seconds}, max {max_seconds})").grid(row=1, column=2, sticky="w", padx=(6, 0))
 
     btns = ttk.Frame(frm)
     btns.grid(row=2, column=0, columnspan=3, sticky="e", pady=(12, 0))
@@ -333,141 +450,167 @@ def ask_delay_seconds(default: int = 5,
     root.mainloop()
     return result["value"]
 
+# ============================================================================ #
+#                              DRUKOWANIE / SUBIEKT                            
+# ============================================================================ #
 
-def run_sql(spAplikacja, sql: str):
+def ensure_printer_exists(name: str) -> None:
+    available = {
+        p[2] for p in win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS)
+    }
+    if name not in available:
+        raise RuntimeError(f"Nie znaleziono drukarki: {name}")
+
+def drukuj_wg_ustawien(
+    su_dokument,
+    wzw_id: int,
+    printer_name: Optional[str] = DEFAULT_PRINTER,
+    ilosc_kopii: int = 1,
+    strona_od: Optional[int] = None,
+    strona_do: Optional[int] = None,
+) -> None:
+    """Wywołuje DrukujWgUstawien na obiekcie dokumentu."""
+    ust = win32.Dispatch("InsERT.UstawieniaWydruku")
+    ust.WzorzecWydruku = int(wzw_id)
+
+    if printer_name:
+        ensure_printer_exists(printer_name)
+        ust.DrukarkaDomyslSysOp = False
+        ust.Drukarka = printer_name
+    else:
+        ust.DrukarkaDomyslSysOp = True
+
+    ust.IloscKopii = int(ilosc_kopii) if ilosc_kopii else 1
+    if strona_od is not None:
+        ust.StronaOd = int(strona_od)
+    if strona_do is not None:
+        ust.StronaDo = int(strona_do)
+
+    su_dokument.DrukujWgUstawien(ust)
+
+def get_subiekt() -> any:
+    """Logowanie do Subiekta wg zmiennych środowiskowych."""
+    gt = win32.Dispatch("InsERT.GT")
+    gt.Produkt = 1                        # gtaProduktSubiekt
+    gt.Autentykacja = 0                   # gtaAutentykacjaSQL
+    gt.Serwer = os.getenv("SFERA_SQL_SERVER", "127.0.0.1")
+    gt.Uzytkownik = os.getenv("SFERA_SQL_LOGIN", "sa")
+    gt.UzytkownikHaslo = os.getenv("SFERA_SQL_PASSWORD", "SqlPassword01!")
+    gt.Baza = os.getenv("SFERA_SQL_DB", "sfera_demo")
+    gt.Operator = os.getenv("SFERA_OPERATOR", "admin")
+    gt.OperatorHaslo = os.getenv("SFERA_OPERATOR_PASSWORD", "admin")
+    sub = win32.Dispatch(gt.Uruchom(1, GTA_URUCHOM_UI))
+    return sub
+
+def select_docs_prev_month(dok_manager) -> list:
     """
-    Wykonuje dowolny SELECT w Subiekcie przez ADO/COM.
-    Zwraca listę słowników: [{kolumna: wartość, ...}, ...]
+    Otwiera okno wyboru dokumentów (FS, poprzedni miesiąc) i zwraca listę zaznaczonych.
     """
-    conn = spAplikacja.Aplikacja.Baza.Polaczenie  # ADODB.Connection
-    rs = win32.Dispatch("ADODB.Recordset")
+    dok = dok_manager.Wybierz()
+    dok.FiltrTyp = 2            # wszystkie możliwe Faktury Sprzedaży
+    dok.FiltrOkres = 20         # gtaFiltrOkresDowolnyMiesiac
 
-    # adUseClient=3, adOpenStatic=3, adLockReadOnly=1, adCmdText=1
-    rs.CursorLocation = 3
-    rs.Open(sql, conn, 3, 1, 1)
+    # poprzedni miesiac: końcówka dnia poprzedzającego 1-szy dzień bieżącego
+    today = datetime.now()
+    first_this = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    last_prev = first_this - timedelta(seconds=1)
+    dok.FiltrOkresUstawDowolnyMiesiac(to_com_time(last_prev))
 
-    results = []
-    field_names = [f.Name for f in rs.Fields]
+    dok.MultiSelekcja = True
+    logger.info("Otwieram okno wyboru dokumentów... zaznacz dokumenty do wydruku i kliknij OK.")
+    dok.Wyswietl()
 
-    while not rs.EOF:
-        row = {}
-        for name in field_names:
-            row[name] = rs.Fields[name].Value
-        results.append(row)
-        rs.MoveNext()
+    # zmaterializuj iterator
+    docs = list(dok.ZaznaczoneDokumenty())
+    logger.info("Wybrano %d dokumentów do wydruku.", len(docs))
+    return docs
 
-    rs.Close()
-    return results
-
+# ============================================================================ #
+#                                     MAIN                                     
+# ============================================================================ #
 
 def main():
-    # args = parse_args()
-    # d = datetime.fromisoformat(args.new_date)
-    # d_noon = datetime.combine(d.date(), time(12, 0))
-    # new_date = to_com_time(d_noon)
+    # (Opcjonalnie) argumenty CLI
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--storage", help="Ścieżka do CSV z wyborem wzorców (domyślna lokalna/APPDATA).")
+    ap.add_argument("--printer", help="Nazwa drukarki (None = domyślna systemowa).")
+    args = ap.parse_args()
 
+    storage_path = args.storage if args.storage else STORAGE_PATH
+    printer_name = args.printer if args.printer else DEFAULT_PRINTER
 
     pythoncom.CoInitialize()
+    sub = None
     try:
-        gt = win32.Dispatch("InsERT.GT")
-        gt.Produkt = 1 # gtaProduktSubiekt
-        gt.Autentykacja = 0 # gtaAutentykacjaSQL
-        gt.Serwer = os.getenv("SFERA_SQL_SERVER", "127.0.0.1")
-        gt.Uzytkownik = os.getenv("SFERA_SQL_LOGIN", "sa")
-        gt.UzytkownikHaslo = os.getenv("SFERA_SQL_PASSWORD", "SqlPassword01!")
-        gt.Baza = os.getenv("SFERA_SQL_DB", "sfera_demo")
-        gt.Operator = os.getenv("SFERA_OPERATOR", "admin")
-        gt.OperatorHaslo = os.getenv("SFERA_OPERATOR_PASSWORD", "admin")
+        sub = get_subiekt()
+        logger.info("Subiekt GT Sfera %s, baza: %s (%s)", sub.Aplikacja.Wersja, sub.Baza.Nazwa, sub.Baza.Serwer)
 
-        sub = win32.Dispatch(gt.Uruchom(1, gtaUruchom))
+        # dane referencyjne
+        wzorce = fetch_wzorce_fs(sub)
+        wz_by_id = {int(w["wzw_Id"]): str(w["wzw_Nazwa"]) for w in wzorce}
+        kontrahenci = fetch_kontrahenci_basic(sub)
 
-        wzorce_wydrukow = run_sql(sub, """SELECT wzw_Id, wzw_Nazwa
-                                            FROM wy_Wzorzec wz
-                                            JOIN wy_Typ wt ON wz.wzw_Typ = wt.wtp_Id
-                                           WHERE wt.wtp_Nazwa = 'Faktura sprzedaży'""")
-        wz_dict = {wz['wzw_Id']: wz['wzw_Nazwa'] for wz in wzorce_wydrukow}
-        
-        kontrahenci = run_sql(sub, """SELECT k.kh_Id,
-                                             a.adr_Nazwa AS Nazwa, 
-                                             a.adr_Adres AS Adres,
-                                             a.adr_Miejscowosc AS Miejscowość
-                                        FROM kh__Kontrahent k 
-                                  INNER JOIN adr__Ewid a ON k.kh_Id = a.adr_IdObiektu
-                                       WHERE a.adr_TypAdresu=1""")
-        kontrahenci_dict = {k['kh_Id']: f"{k['Nazwa']}, {k['Adres']}, {k['Miejscowość']}" for k in kontrahenci}
-        sub.MagazynId = 1
-       
-        dok = sub.Dokumenty.Wybierz()
-        dok.FiltrTyp = 2 # Wsztystkie możliwe Faktury Sprzedaży
-        dok.FiltrOkres = 20 # gtaFiltrOkresDowolnyMiesiac 
+        # wybór dokumentów
+        docs = select_docs_prev_month(sub.Dokumenty)
 
-        today = datetime.now()
-        first_this = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        last_prev = first_this - timedelta(seconds=1)  # 23:59:59 dnia poprzedzającego
-        com_time = to_com_time(last_prev)
+        # zbuduj listę unikalnych kontrahentów
+        kh_ids: list[int] = []
+        for d in docs:
+            if d.KontrahentId not in kh_ids:
+                kh_ids.append(int(d.KontrahentId))
 
-        # dt = datetime(2025, 9, 4, 12, 0, 0)
-        # com_time = to_com_time(dt)
+        # wybór / preselekcja wzorców per kontrahent
+        wz_kontr: dict[int, Optional[int]] = {}
+        for i, kh_id in enumerate(kh_ids, start=1):
+            def _remember(wzw_id: int, _kh=kh_id):
+                set_saved_wzor(_kh, wzw_id, storage_path)
 
-        dok.FiltrOkresUstawDowolnyMiesiac(com_time) # poczatek miesiąca poprzedniego
-        dok.MultiSelekcja = True
-        dok.Wyswietl()
-        num_of_docs = len(list(dok.ZaznaczoneDokumenty()))
-        print(f"Wybrano {num_of_docs} dokumentów do wydruku.")
-        ids = []
-        for p in dok.ZaznaczoneDokumenty():   # iteracja po zaznaczonych dokumentach
-            if p.KontrahentId not in ids:
-                ids.append(p.KontrahentId)
-        
-        num = 0
-        wz_kontr_dict = {}
-        for id in ids:
-            def _remember(wzw_id: int):
-                set_saved_wzor(id, wzw_id, storage_path)
-            num += 1
-            print(f"Wybór wzorca dla {kontrahenci_dict[id]} (ID: {id}) ({num}/{len(ids)})")
-            pre = get_saved_wzor(id, storage_path)
-            wybrany = choose_wzor_wydruku(
-                nazwa_kontrahenta=kontrahenci_dict[id],
-                wzorce=wzorce_wydrukow,
-                kh_id=id,
+            nazwa = kontrahenci.get(kh_id, f"KH {kh_id}")
+            logger.info("Wybór wzorca dla %s (ID: %s) (%d/%d)", nazwa, kh_id, i, len(kh_ids))
+            pre = get_saved_wzor(kh_id, storage_path)
+            wyb = choose_wzor_wydruku(
+                nazwa_kontrahenta=nazwa,
+                wzorce=wzorce,
+                num=i,
+                total=len(kh_ids),
+                kh_id=kh_id,
                 preselect_wzw_id=pre,
                 remember_default=True,
                 on_remember=_remember,
-                num = num,
-                total = len(ids)
             )
-            print("Wybrano:", wybrany['wzw_Nazwa'] if wybrany else "Anulowano")
-            wz_kontr_dict[id] = wybrany['wzw_Id'] if wybrany else None
-        
-        delay = ask_delay_seconds(default=5)
-        num = 0
-        for p in dok.ZaznaczoneDokumenty():   # iteracja po zaznaczonych dokumentach
-            num += 1
-            ust = win32.Dispatch("InsERT.UstawieniaWydruku")
-            if wz_kontr_dict.get(p.KontrahentId):
-                ust.WzorzecWydruku = wz_kontr_dict.get(p.KontrahentId)
-            ust.DrukarkaDomyslSysOp = False
-            ust.Drukarka = "Microsoft Print to PDF"  # PDF
-          # oUstWyd.DrukarkaDomyslSysOp = False
-          # oUstWyd.Drukarka = "NazwaDrukarki"
-          # oUstWyd.WzorzecWydruku = 4
-            ust.IloscKopii = 1
-          # oUstWyd.StronaOd = 1
-          # oUstWyd.StronaDo = 2
-            print(f"Drukuję ({num}/{num_of_docs}) {p.NumerPelny} wzorem {wz_dict[wz_kontr_dict[p.KontrahentId]]}")
-            p.DrukujWgUstawien(ust)
-            if delay and delay > 0 and num < num_of_docs:
-                import time
-                print(f"  ... czekam {delay} sekund ...")
+            logger.info("Wybrano: %s", wyb["wzw_Nazwa"] if wyb else "Anulowano")
+            wz_kontr[kh_id] = int(wyb["wzw_Id"]) if wyb else None
+
+        # opóźnienie między drukami
+        delay = ask_delay_seconds(default=5) or 0
+
+        # drukowanie
+        for i, d in enumerate(docs, start=1):
+            wzw_id = wz_kontr.get(int(d.KontrahentId))
+            if not wzw_id:
+                logger.warning("Pomijam %s – brak wybranego wzorca.", getattr(d, "NumerPelny", "<bez numeru>"))
+                continue
+            wz_name = wz_by_id.get(wzw_id, f"wzorzec {wzw_id}")
+            logger.info("Drukuję (%d/%d) %s wzorem %s", i, len(docs), d.NumerPelny, wz_name)
+            drukuj_wg_ustawien(d, wzw_id=wzw_id, printer_name=printer_name, ilosc_kopii=1)
+            if delay and i < len(docs):
+                logger.info("  ... czekam %d sekund ...", delay)
                 time.sleep(delay)
+
     except com_error as e:
-        print("Błąd COM:", e)
+        logger.exception("Błąd COM: %s", e)
+    except Exception as e:
+        logger.exception("Błąd krytyczny: %s", e)
     finally:
         try:
-            sub.Zakoncz()
+            if sub is not None:
+                sub.Zakoncz()
         except Exception:
             pass
+        pythoncom.CoUninitialize()
+
 
 if __name__ == "__main__":
+    logfile = setup_logging()
+    logger.info("Start aplikacji. Logi zapisuję do pliku: %s", logfile)
     main()
