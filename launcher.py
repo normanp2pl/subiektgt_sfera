@@ -1,9 +1,9 @@
 import os
-import sys
 import subprocess
-from pathlib import Path
+import sys
 import tkinter as tk
-from tkinter import ttk, messagebox
+from pathlib import Path
+from tkinter import messagebox, ttk
 
 # ===== KONFIGURACJA APLIKACJI =====
 # Możesz dopisać kolejne pozycje. Ścieżki względne liczone są od folderu tego pliku.
@@ -60,7 +60,7 @@ def launch_app(app: dict):
         messagebox.showerror("Błąd uruchamiania", str(e))
 
 def build_ui(root: tk.Tk):
-    root.title("Launcher")
+    root.title("Sfera apps launcher by DevNorman")
     root.geometry("420x260")
     root.minsize(380, 220)
     root.lift()

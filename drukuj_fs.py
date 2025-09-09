@@ -5,6 +5,7 @@ Drukowanie FS z wyborem wzorca per kontrahent (zapamiętywane w CSV) + launcher 
 
 # ===== Standard library =====
 from __future__ import annotations
+
 import argparse
 import builtins
 import csv
@@ -13,8 +14,12 @@ import os
 import sys
 import tempfile
 import time
-from datetime import datetime, timedelta, time as dtime
+import tkinter as tk
+from datetime import datetime
+from datetime import time as dtime
+from datetime import timedelta
 from pathlib import Path
+from tkinter import messagebox, ttk
 from typing import Callable, Optional
 
 # ===== Third-party =====
@@ -23,8 +28,6 @@ import pywintypes
 import win32com.client as win32
 import win32print
 from pywintypes import com_error
-import tkinter as tk
-from tkinter import ttk, messagebox
 
 # ============================================================================ #
 #                                   KONFIG                                     
@@ -525,6 +528,62 @@ def select_docs_prev_month(dok_manager) -> list:
     logger.info("Wybrano %d dokumentów do wydruku.", len(docs))
     return docs
 
+
+def show_completion_dialog(logfile: str | None = None, logs_dir: str = "logs") -> None:
+    """
+    Pokazuje modalne okno 'Operacja zakończona' i czeka na OK.
+    Jeśli podasz 'logfile', folder logów zostanie określony na jego katalog.
+    """
+    # Ustal ścieżki do pokazania / otwarcia
+    if logfile:
+        logs_path = Path(logfile).resolve().parent
+        last_file = Path(logfile).resolve()
+    else:
+        logs_path = Path(logs_dir).resolve()
+        last_file = None
+
+    root = tk.Tk()
+    root.title("Operacja zakończona")
+    root.resizable(False, False)
+    root.lift()
+    root.attributes("-topmost", True)
+    root.focus_force()
+    root.grab_set()
+
+    frm = ttk.Frame(root, padding=12)
+    frm.pack(fill="both", expand=True)
+
+    msg = (
+        "Operacja zakończona.\n"
+        "Przejrzyj logi i naciśnij OK, aby zamknąć program.\n\n"
+        f"Logi znajdziesz w podkatalogu:\n{logs_path}"
+    )
+    if last_file:
+        msg += f"\nNajnowszy plik logu:\n{last_file.name}"
+
+    ttk.Label(frm, text=msg, justify="left", wraplength=520).grid(row=0, column=0, columnspan=3, sticky="w")
+
+    btns = ttk.Frame(frm)
+    btns.grid(row=1, column=0, columnspan=3, sticky="e", pady=(12, 0))
+
+    def open_logs():
+        try:
+            # Windows:
+            os.startfile(str(logs_path))
+        except Exception:
+            # Fallback na inne systemy:
+            import webbrowser
+            webbrowser.open(str(logs_path))
+
+    ttk.Button(btns, text="Otwórz folder logów", command=open_logs).pack(side="left")
+    ttk.Button(btns, text="OK", command=root.destroy).pack(side="right")
+
+    root.bind("<Return>", lambda e: root.destroy())
+    root.bind("<Escape>", lambda e: root.destroy())
+
+    root.mainloop()
+
+
 # ============================================================================ #
 #                                     MAIN                                     
 # ============================================================================ #
@@ -613,4 +672,7 @@ def main():
 if __name__ == "__main__":
     logfile = setup_logging()
     logger.info("Start aplikacji. Logi zapisuję do pliku: %s", logfile)
-    main()
+    try:
+        main()
+    finally:
+        show_completion_dialog(logfile=logfile, logs_dir="logs")
