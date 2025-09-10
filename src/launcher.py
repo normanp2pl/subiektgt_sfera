@@ -24,6 +24,11 @@ APPS = [
         "label": "Seryjne drukowanie PDF",
         "script": "druk_pdf.py",
     },
+    {
+        "id": "stworz_zk",
+        "label": "Tworzenie dokumentu ZK",
+        "script": "stworz_zk.py",
+    },
 ]
 
 # ====== LAUNCHER ======
