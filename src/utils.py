@@ -1,5 +1,7 @@
 import os
-from datetime import datetime, time, timedelta
+import re
+
+from datetime import datetime, timedelta
 
 import pywintypes
 import win32com.client as win32
@@ -44,8 +46,20 @@ def get_subiekt() -> any:
     gt.Operator = os.getenv("SFERA_OPERATOR", "admin")
     gt.OperatorHaslo = os.getenv("SFERA_OPERATOR_PASSWORD", "admin")
     sub = win32.Dispatch(gt.Uruchom(1, 4))
+    print(f"Subiekt GT Sfera {sub.Aplikacja.Wersja}, " \
+          f"baza: {sub.Baza.Nazwa} ({sub.Baza.Serwer})")
     return sub
 
+def get_subiekt_default_login() -> any:
+    """Logowanie do Subiekta wg ustawionych parametrów w programie serwisowym poza hasłem operatora."""
+    gt = win32.Dispatch("InsERT.GT")
+    gt.Produkt = 1                        # gtaProduktSubiekt
+    gt.Operator = os.getenv("SFERA_OPERATOR", "admin")
+    gt.OperatorHaslo = os.getenv("SFERA_OPERATOR_PASSWORD", "admin")
+    sub = win32.Dispatch(gt.Uruchom(1, 4))
+    print(f"Subiekt GT Sfera {sub.Aplikacja.Wersja}, " \
+          f"baza: {sub.Baza.Nazwa} ({sub.Baza.Serwer})")
+    return sub
 
 def select_docs_prev_month(dok_manager, typ: int) -> list:
     """
@@ -70,3 +84,20 @@ def select_docs_prev_month(dok_manager, typ: int) -> list:
     docs = list(dok.ZaznaczoneDokumenty())
     print(f"Wybrano {len(docs)} dokumentów.")
     return docs
+
+
+def safe_filename(name: str, ext="pdf", maxlen=150) -> str:
+    name = re.sub(r'[\x00-\x1f]+', '', name)                # usuń znaki sterujące
+    name = re.sub(r'[\\/:*?"<>|]+', '-', name)              # zamień niedozwolone
+    name = re.sub(r'\s+', ' ', name).strip().rstrip(' .')   # zbędne spacje/kropki
+    reserved = {"CON","PRN","AUX","NUL","COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
+                "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"}
+    stem = name.split('.', 1)[0]
+    if stem.upper() in reserved:
+        name = f"_{name}"
+    if len(name) > maxlen:
+        base, dot, ext_old = name.partition('.')
+        ext_suffix = f".{ext_old}" if dot else ""
+        keep = max(1, maxlen - len(ext_suffix))
+        name = base[:keep] + ext_suffix
+    return f"{name}.{ext}"

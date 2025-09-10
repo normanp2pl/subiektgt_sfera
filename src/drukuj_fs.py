@@ -10,9 +10,7 @@ import argparse
 import csv
 import logging
 import os
-import re
 import tempfile
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -24,7 +22,7 @@ from pywintypes import com_error
 
 import logowanie
 from gui import choose_wzor_wydruku, show_completion_dialog, choose_output_dir
-from utils import get_subiekt, run_sql, select_docs_prev_month
+from utils import get_subiekt, run_sql, select_docs_prev_month, safe_filename
 
 logger = logging.getLogger(__name__)
 
@@ -167,21 +165,6 @@ def drukuj_wg_ustawien(
 
     su_dokument.DrukujWgUstawien(ust)
 
-def safe_filename(name: str, ext="pdf", maxlen=150) -> str:
-    name = re.sub(r'[\x00-\x1f]+', '', name)                # usuń znaki sterujące
-    name = re.sub(r'[\\/:*?"<>|]+', '-', name)              # zamień niedozwolone
-    name = re.sub(r'\s+', ' ', name).strip().rstrip(' .')   # zbędne spacje/kropki
-    reserved = {"CON","PRN","AUX","NUL","COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
-                "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"}
-    stem = name.split('.', 1)[0]
-    if stem.upper() in reserved:
-        name = f"_{name}"
-    if len(name) > maxlen:
-        base, dot, ext_old = name.partition('.')
-        ext_suffix = f".{ext_old}" if dot else ""
-        keep = max(1, maxlen - len(ext_suffix))
-        name = base[:keep] + ext_suffix
-    return f"{name}.{ext}"
 # ============================================================================ #
 #                                     MAIN                                     
 # ============================================================================ #
@@ -203,7 +186,6 @@ def main():
     sub = None
     try:
         sub = get_subiekt()
-        logger.info("Subiekt GT Sfera %s, baza: %s (%s)", sub.Aplikacja.Wersja, sub.Baza.Nazwa, sub.Baza.Serwer)
 
         # dane referencyjne
         wzorce = fetch_wzorce_fs(sub)

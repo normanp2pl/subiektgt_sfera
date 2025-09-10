@@ -29,7 +29,6 @@ def main():
     sub = None
     try:
         sub = get_subiekt()
-        logger.info("Subiekt GT Sfera %s, baza: %s (%s)", sub.Aplikacja.Wersja, sub.Baza.Nazwa, sub.Baza.Serwer)
         selected = select_docs_prev_month(sub.Dokumenty, typ=9)  # 9 = MM
         if not selected:
             print("Nie wybrano żadnych dokumentów.")
