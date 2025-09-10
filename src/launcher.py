@@ -19,6 +19,11 @@ APPS = [
         "label": "Zmiana dat dokumentów MM",
         "script": "zmiana_mm.py",
     },
+    {
+        "id": "wydruk_pdf",
+        "label": "Seryjne drukowanie PDF",
+        "script": "druk_pdf.py",
+    },
 ]
 
 # ====== LAUNCHER ======
