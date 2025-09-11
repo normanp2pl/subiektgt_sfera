@@ -1,6 +1,7 @@
 from gui import ask_delay_seconds, show_completion_dialog
 
 import os
+import subprocess
 import time
 import threading
 import tkinter as tk
@@ -85,6 +86,18 @@ class WindowsPrinterBackend:
         # Use ShellExecute with PrintTo verb so the registered PDF handler does the rendering
         # Note: this call is asynchronous; add a small delay between jobs to avoid overloading the handler
         self.win32api.ShellExecute(0, "printto", pdf_path, f'"{printer_name}"', ".", 0)
+    
+    def print_with_adobe(self, printer, pdf_path):
+        acro_paths = [
+            r"c:\\Program Files\\Adobe\\Acrobat DC\\Acrobat\\Acrobat.exe",
+            r"C:\\Program Files\\Adobe\\Acrobat Reader DC\\Reader\\AcroRd32.exe",
+            r"C:\\Program Files (x86)\\Adobe\\Acrobat Reader DC\\Reader\\AcroRd32.exe",
+        ]
+        exe = next((p for p in acro_paths if os.path.exists(p)), None)
+        if not exe:
+            raise RuntimeError("Nie znaleziono AcroRd32.exe – sprawdź instalację Adobe Reader")
+        cmd = [exe, "/N", "/T", pdf_path, printer]
+        subprocess.Popen(cmd, shell=False)
 
 
 # ---- UI -----------------------------------------------------------------------
@@ -221,7 +234,8 @@ class App(tk.Tk):
             with self.backend.apply_printer_prefs(printer_name, duplex, orient):
                 for i, pdf in enumerate(pdfs, 1):
                     try:
-                        self.backend.print_pdf(printer_name, pdf)
+                        # self.backend.print_pdf(printer_name, pdf) # Używając printto - nie działa za każdym razem
+                        self.backend.print_with_adobe(printer_name, pdf)
                         self._log(f"[{i}/{len(pdfs)}] Wysłano: {os.path.basename(pdf)}\n")
                     except Exception as e:
                         self._log(f"BŁĄD przy {os.path.basename(pdf)}: {e}\n")
