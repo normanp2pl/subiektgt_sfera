@@ -1,12 +1,11 @@
-from gui import ask_delay_seconds, show_completion_dialog
-
 import os
-import subprocess
+import sys
 import time
+import platform
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-
 
 # ---- Platform printer backends -------------------------------------------------
 
@@ -14,8 +13,10 @@ class WindowsPrinterBackend:
     def __init__(self):
         import win32print  # type: ignore
         import win32api    # type: ignore
+        import win32gui    # type: ignore
         self.win32print = win32print
         self.win32api = win32api
+        self.win32gui = win32gui
 
     def list_printers(self):
         flags = self.win32print.PRINTER_ENUM_LOCAL | self.win32print.PRINTER_ENUM_CONNECTIONS
@@ -29,64 +30,20 @@ class WindowsPrinterBackend:
             names.sort(key=lambda n: n.lower())
         return names
 
-    def apply_printer_prefs(self, printer_name, duplex_mode, orientation):
-        """Best-effort set duplex/orientation on the printer defaults for this process.
-        duplex_mode: 'simplex' | 'long' | 'short'
-        orientation: 'portrait' | 'landscape'
-        Returns a context manager that restores settings afterwards.
+    def show_printer_properties_dialog(self, printer_name):
+        """Opens the system Printing Preferences UI.
         """
-        import contextlib
-        win32print = self.win32print
-        DMDUP = {"simplex": 1, "long": 2, "short": 3}
-        DMORIENT = {"portrait": 1, "landscape": 2}
-
-        @contextlib.contextmanager
-        def _ctx():
-            hprinter = None
-            old_dev = None
-            try:
-                hprinter = win32print.OpenPrinter(printer_name)
-                level = 2
-                info = win32print.GetPrinter(hprinter, level)
-                old_dev = info["pDevMode"]
-                # Clone a DEVMODE we can edit
-                dev = win32print.DocumentProperties(0, hprinter, printer_name, None, None, 0)
-                # When called with None it returns size; we need a real structure next
-                dev = win32print.DocumentProperties(0, hprinter, printer_name, old_dev, None, 2)
-                # Set duplex
-                if duplex_mode in DMDUP:
-                    dev.Duplex = DMDUP[duplex_mode]
-                    dev.Fields |= 0x1000  # DM_DUPLEX
-                # Set orientation
-                if orientation in DMORIENT:
-                    dev.Orientation = DMORIENT[orientation]
-                    dev.Fields |= 0x1  # DM_ORIENTATION
-                # Apply
-                win32print.DocumentProperties(0, hprinter, printer_name, dev, dev, 0x3)  # DM_IN_BUFFER|DM_OUT_BUFFER
-                info["pDevMode"] = dev
-                win32print.SetPrinter(hprinter, level, info, 0)
-                yield
-            except Exception:
-                # If anything fails, just proceed with defaults
-                yield
-            finally:
-                if hprinter:
-                    try:
-                        # Attempt to restore old settings
-                        if old_dev:
-                            info = win32print.GetPrinter(hprinter, 2)
-                            info["pDevMode"] = old_dev
-                            win32print.SetPrinter(hprinter, 2, info, 0)
-                    except Exception:
-                        pass
-                    win32print.ClosePrinter(hprinter)
-        return _ctx()
-
+        try:
+            subprocess.Popen(["rundll32", "printui.dll,PrintUIEntry", "/p", f"/n{printer_name}"])
+        except Exception:
+            pass
+        return False
+   
     def print_pdf(self, printer_name, pdf_path):
         # Use ShellExecute with PrintTo verb so the registered PDF handler does the rendering
         # Note: this call is asynchronous; add a small delay between jobs to avoid overloading the handler
         self.win32api.ShellExecute(0, "printto", pdf_path, f'"{printer_name}"', ".", 0)
-    
+
     def print_with_adobe(self, printer, pdf_path):
         acro_paths = [
             r"c:\\Program Files\\Adobe\\Acrobat DC\\Acrobat\\Acrobat.exe",
@@ -120,10 +77,8 @@ class App(tk.Tk):
         # State
         self.folder = tk.StringVar()
         self.printer = tk.StringVar()
-        self.duplex = tk.StringVar(value="simplex")  # simplex | long | short
-        self.orientation = tk.StringVar(value="portrait")  # portrait | landscape
         self.recursive = tk.BooleanVar(value=False)
-        self.delay = tk.IntVar(value=5)  # spacing between jobs
+        self.delay = tk.IntVar(value=10)  # spacing between jobs
 
         self._build_ui()
         self._load_printers()
@@ -144,18 +99,8 @@ class App(tk.Tk):
         self.printer_combo = ttk.Combobox(frm2, textvariable=self.printer, state="readonly", width=50)
         self.printer_combo.grid(row=0, column=1, sticky="we", padx=8)
         ttk.Button(frm2, text="Odśwież", command=self._load_printers).grid(row=0, column=2, sticky="e")
+        ttk.Button(frm2, text="Właściwości…", command=self.open_printer_properties).grid(row=0, column=3, sticky="e", padx=(8,0))
         frm2.columnconfigure(1, weight=1)
-
-        frm3 = ttk.Frame(self)
-        frm3.pack(fill=tk.X, **pad)
-        ttk.Label(frm3, text="Dwustronnie:").grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(frm3, text="Nie", value="simplex", variable=self.duplex).grid(row=0, column=1, sticky="w")
-        ttk.Radiobutton(frm3, text="Dł. krawędź", value="long", variable=self.duplex).grid(row=0, column=2, sticky="w")
-        ttk.Radiobutton(frm3, text="Krót. kraw.", value="short", variable=self.duplex).grid(row=0, column=3, sticky="w")
-
-        ttk.Label(frm3, text="Orientacja:").grid(row=1, column=0, sticky="w", pady=(8,0))
-        ttk.Radiobutton(frm3, text="Pion", value="portrait", variable=self.orientation).grid(row=1, column=1, sticky="w", pady=(8,0))
-        ttk.Radiobutton(frm3, text="Poziom", value="landscape", variable=self.orientation).grid(row=1, column=2, sticky="w", pady=(8,0))
 
         frm4 = ttk.Frame(self)
         frm4.pack(fill=tk.X, **pad)
@@ -188,6 +133,16 @@ class App(tk.Tk):
         self.printer_combo["values"] = names
         if names and not self.printer.get():
             self.printer.set(names[0])
+
+    def open_printer_properties(self):
+        name = self.printer.get()
+        if not name:
+            messagebox.showwarning("Brak drukarki", "Wybierz drukarkę.")
+            return
+        try:
+            self.backend.show_printer_properties_dialog(name)
+        except Exception as e:
+            messagebox.showerror("Właściwości drukarki", f"Nie udało się otworzyć właściwości: {e}")
 
     def _iter_pdfs(self, root, recursive=False):
         if recursive:
@@ -224,24 +179,21 @@ class App(tk.Tk):
 
     def _print_worker(self, pdfs):
         printer_name = self.printer.get()
-        duplex = self.duplex.get()
-        orient = self.orientation.get()
         delay = max(0, int(self.delay.get()))
 
-        self._log(f"Drukarka: {printer_name}\nDwustronnie: {duplex}\nOrientacja: {orient}\n---\n")
+        self._log(f"Drukarka: {printer_name}\n---\n")
 
         try:
-            with self.backend.apply_printer_prefs(printer_name, duplex, orient):
-                for i, pdf in enumerate(pdfs, 1):
-                    try:
-                        # self.backend.print_pdf(printer_name, pdf) # Używając printto - nie działa za każdym razem
-                        self.backend.print_with_adobe(printer_name, pdf)
-                        self._log(f"[{i}/{len(pdfs)}] Wysłano: {os.path.basename(pdf)}\n")
-                    except Exception as e:
-                        self._log(f"BŁĄD przy {os.path.basename(pdf)}: {e}\n")
-                    if i < len(pdfs):
-                        self._log(f" ... czekam {delay} sekund ...\n")
-                        time.sleep(delay)
+            for i, pdf in enumerate(pdfs, 1):
+                try:
+                    # self.backend.print_pdf(printer_name, pdf) # Używając printto - nie działa za każdym razem
+                    self.backend.print_with_adobe(printer_name, pdf)
+                    self._log(f"[{i}/{len(pdfs)}] Wysłano: {os.path.basename(pdf)}\n")
+                except Exception as e:
+                    self._log(f"BŁĄD przy {os.path.basename(pdf)}: {e}\n")
+                if i < len(pdfs):
+                    self._log(f" ... czekam {delay} sekund ...\n")
+                    time.sleep(delay)
             self._log("\nGotowe.\n")
         finally:
             self.start_btn["state"] = "normal"
