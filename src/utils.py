@@ -44,7 +44,7 @@ def get_subiekt() -> any:
     # gt.Serwer = os.getenv("SFERA_SQL_SERVER", "127.0.0.1\INSERTGT")
     # gt.Uzytkownik = os.getenv("SFERA_SQL_LOGIN", "sa")
     # gt.UzytkownikHaslo = os.getenv("SFERA_SQL_PASSWORD", "SqlPassword01!")
-    gt.Baza = os.getenv("SFERA_SQL_DB", "sfera_demo")
+    # gt.Baza = os.getenv("SFERA_SQL_DB", "sfera_demo")
     gt.Operator = cred_read()[0]
     gt.OperatorHaslo = cred_read()[1]
     sub = win32.Dispatch(gt.Uruchom(1, 4))

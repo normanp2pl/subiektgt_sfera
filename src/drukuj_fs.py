@@ -227,6 +227,9 @@ def main():
         # delay = ask_delay_seconds(default=5) or 0
 
         # drukowanie/export
+        if len(docs) == 0:
+            logger.info("Brak dokumentów do eksportu.")
+            return
         out_dir = choose_output_dir(default_dir)
         for i, d in enumerate(docs, start=1):
             wzw_id = wz_kontr.get(int(d.KontrahentId))
