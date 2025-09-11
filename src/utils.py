@@ -1,3 +1,4 @@
+import getpass
 import os
 import re
 
@@ -5,11 +6,12 @@ from datetime import datetime, timedelta
 
 import pywintypes
 import win32com.client as win32
-
+import win32cred
 
 def to_com_time(dt: datetime):
     return pywintypes.Time(dt)
 
+cred_target = "Subiekt_sfera"
 
 # ============================================================================ #
 #                        ADO/COM: zapytania pomocnicze                          
@@ -38,28 +40,18 @@ def get_subiekt() -> any:
     """Logowanie do Subiekta wg zmiennych środowiskowych."""
     gt = win32.Dispatch("InsERT.GT")
     gt.Produkt = 1                        # gtaProduktSubiekt
-    gt.Autentykacja = 0                   # gtaAutentykacjaSQL
-    gt.Serwer = os.getenv("SFERA_SQL_SERVER", "127.0.0.1")
-    gt.Uzytkownik = os.getenv("SFERA_SQL_LOGIN", "sa")
-    gt.UzytkownikHaslo = os.getenv("SFERA_SQL_PASSWORD", "SqlPassword01!")
+    # gt.Autentykacja = 0                   # gtaAutentykacjaSQL
+    # gt.Serwer = os.getenv("SFERA_SQL_SERVER", "127.0.0.1\INSERTGT")
+    # gt.Uzytkownik = os.getenv("SFERA_SQL_LOGIN", "sa")
+    # gt.UzytkownikHaslo = os.getenv("SFERA_SQL_PASSWORD", "SqlPassword01!")
     gt.Baza = os.getenv("SFERA_SQL_DB", "sfera_demo")
-    gt.Operator = os.getenv("SFERA_OPERATOR", "admin")
-    gt.OperatorHaslo = os.getenv("SFERA_OPERATOR_PASSWORD", "admin")
+    gt.Operator = cred_read()[0]
+    gt.OperatorHaslo = cred_read()[1]
     sub = win32.Dispatch(gt.Uruchom(1, 4))
     print(f"Subiekt GT Sfera {sub.Aplikacja.Wersja}, " \
           f"baza: {sub.Baza.Nazwa} ({sub.Baza.Serwer})")
     return sub
 
-def get_subiekt_default_login() -> any:
-    """Logowanie do Subiekta wg ustawionych parametrów w programie serwisowym poza hasłem operatora."""
-    gt = win32.Dispatch("InsERT.GT")
-    gt.Produkt = 1                        # gtaProduktSubiekt
-    gt.Operator = os.getenv("SFERA_OPERATOR", "admin")
-    gt.OperatorHaslo = os.getenv("SFERA_OPERATOR_PASSWORD", "admin")
-    sub = win32.Dispatch(gt.Uruchom(1, 4))
-    print(f"Subiekt GT Sfera {sub.Aplikacja.Wersja}, " \
-          f"baza: {sub.Baza.Nazwa} ({sub.Baza.Serwer})")
-    return sub
 
 def select_docs_prev_month(dok_manager, typ: int) -> list:
     """
@@ -101,3 +93,40 @@ def safe_filename(name: str, ext="pdf", maxlen=150) -> str:
         keep = max(1, maxlen - len(ext_suffix))
         name = base[:keep] + ext_suffix
     return f"{name}.{ext}"
+
+_PERSIST = {
+    "session": win32cred.CRED_PERSIST_SESSION,
+    "local": win32cred.CRED_PERSIST_LOCAL_MACHINE,
+    "enterprise": win32cred.CRED_PERSIST_ENTERPRISE,
+}
+
+def cred_write(username: str | None = None,
+               password: str | None = None,
+               persist: str = "local",
+               target: str = cred_target) -> None:
+    if username is None:
+        username = input("Login operatora: ")
+    if password is None:
+        password = getpass.getpass("Hasło operatora: ")
+
+    cred = {
+        "Type": win32cred.CRED_TYPE_GENERIC,
+        "TargetName": target,
+        "UserName": username,
+        "CredentialBlob": password,
+        "Persist": _PERSIST[persist],
+        "Comment": "Subiekt autologin",
+    }
+    win32cred.CredWrite(cred, 0)
+
+
+def cred_read(target = cred_target) -> tuple[str, str]:
+    c = win32cred.CredRead(target, win32cred.CRED_TYPE_GENERIC, 0)
+    return c["UserName"], c["CredentialBlob"].decode("utf-16le")
+
+def cred_delete(target = cred_target):
+    try:
+        win32cred.CredDelete(target, win32cred.CRED_TYPE_GENERIC, 0)
+    except Exception as e:
+        print(f"Nie udało się usunąć poświadczeń {target}: {e}")
+

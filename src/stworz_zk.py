@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 from gui import choose_output_dir, show_completion_dialog
-from utils import get_subiekt_default_login, safe_filename
+from utils import get_subiekt, safe_filename
 import logowanie
 from pywintypes import com_error
 import pythoncom
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 id_wzorca = 440  # ID wzorca wydruku zdefiniowanego w Subiekcie
 
 # Nazwa pliku logu: prefiks + data
-LOG_PREFIX = "FS_"
+LOG_PREFIX = "ZK_"
 
 
 def main():
@@ -23,7 +23,7 @@ def main():
     sub = None
     
     try:
-        sub = get_subiekt_default_login()
+        sub = get_subiekt()
         nowy_dok = sub.Dokumenty.Dodaj(-8)
         logger.info("Wyświetlam okno do tworzenia nowego dokumentu ZK...")
         nowy_dok.Wyswietl()
