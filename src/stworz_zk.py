@@ -1,21 +1,27 @@
 import logging
-from pathlib import Path
-from gui import choose_output_dir, show_completion_dialog
-from utils import get_subiekt, safe_filename
-import logowanie
-from pywintypes import com_error
+
 import pythoncom
+from pywintypes import com_error
+
+import logowanie
+from utils import get_subiekt, run_sql
 
 logger = logging.getLogger(__name__)
 
-# Listę wzorców można znaleźć w SQL:
-# SELECT wzw_Id, wzw_Nazwa FROM wy_Wzorzec wz
-# join wy_Typ wt on wz.wzw_Typ = wt.wtp_Id
-# where wt.wtp_Nazwa = 'Zamówienie od klienta'
-id_wzorca = 440  # ID wzorca wydruku zdefiniowanego w Subiekcie
+kategoria = "Magazyn"
 
-# Nazwa pliku logu: prefiks + data
 LOG_PREFIX = "ZK_"
+
+
+def get_kategoria_id(sub, nazwa: str) -> int:
+    """Pobiera ID kategorii o podanej nazwie."""
+    kategoria = run_sql(sub, f"""SELECT kat_Id
+                                   FROM sl_Kategoria
+                                  WHERE kat_Nazwa = '{nazwa}'""")
+    if not kategoria:
+        logger.warning("Nie znaleziono kategorii o nazwie '%s', zostanie użyta domyślna.", nazwa)
+        return None
+    return kategoria[0]['kat_Id']
 
 
 def main():
@@ -26,18 +32,15 @@ def main():
         sub = get_subiekt()
         nowy_dok = sub.Dokumenty.Dodaj(-8)
         logger.info("Wyświetlam okno do tworzenia nowego dokumentu ZK...")
+        kategoria_id = get_kategoria_id(sub, kategoria)
+        if kategoria_id:
+            nowy_dok.KategoriaId = kategoria_id
+        nowy_dok.Tytul = "Tutaj też możemy wpisać co nam się podoba"
+        nowy_dok.Uwagi = "A to są uwagi do dokumentu\r\nMożna tu wpisać coś dłuższego\r\ni wielolinijkowego."
         nowy_dok.Wyswietl()
         if not nowy_dok.NumerPelny.startswith("ZK"):
-            print("Anulowano przez użytkownika. Dokument nie został utworzony.")
+            logger.warning("Anulowano przez użytkownika. Dokument nie został utworzony.")
             return
-        default_dir = (Path.cwd().parent / "wydruki")  # ..\wydruki
-        default_dir.mkdir(parents=True, exist_ok=True)
-        print("Wyświetlam okno wyboru katalogu docelowego...")
-        out_dir = choose_output_dir(default_dir)
-        fname = safe_filename(str(nowy_dok.NumerPelny))
-        fullpath = str(out_dir / fname)
-        logger.info("Exportuję nowy dokument %s do pliku %s", nowy_dok.NumerPelny, fullpath)
-        nowy_dok.DrukujDoPlikuWgWzorca(id_wzorca, fullpath, 0)  # 0 = PDF
     
     except com_error as e:
         logger.exception("Błąd COM: %s", e)
@@ -53,7 +56,7 @@ def main():
 
 if __name__ == "__main__":
     logfile = logowanie.setup_logging(LOG_PREFIX = LOG_PREFIX)
-    print(f"Start aplikacji. Logi zapisuję do pliku: {logfile}")
+    logger.info(f"Start aplikacji. Logi zapisuję do pliku: {logfile}")
     # try:
     main()
     # finally:

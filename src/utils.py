@@ -1,12 +1,12 @@
 import getpass
-import os
 import re
-
+import shutil
 from datetime import datetime, timedelta
 
 import pywintypes
-import win32com.client as win32
 import win32cred
+from win32com.client import Dispatch, gencache
+
 
 def to_com_time(dt: datetime):
     return pywintypes.Time(dt)
@@ -22,7 +22,7 @@ def run_sql(spAplikacja, sql: str) -> list[dict]:
     Zwraca listę słowników: [{kolumna: wartość, ...}, ...]
     """
     conn = spAplikacja.Aplikacja.Baza.Polaczenie  # ADODB.Connection
-    rs = win32.Dispatch("ADODB.Recordset")
+    rs = Dispatch("ADODB.Recordset")
     # adUseClient=3, adOpenStatic=3, adLockReadOnly=1, adCmdText=1
     rs.CursorLocation = 3
     rs.Open(sql, conn, 3, 1, 1)
@@ -38,7 +38,11 @@ def run_sql(spAplikacja, sql: str) -> list[dict]:
 
 def get_subiekt() -> any:
     """Logowanie do Subiekta wg zmiennych środowiskowych."""
-    gt = win32.Dispatch("InsERT.GT")
+    try:
+        gt = Dispatch("InsERT.GT")
+    except AttributeError:
+        shutil.rmtree(gencache.__gen_path__, ignore_errors=True)
+        gencache.Rebuild()
     gt.Produkt = 1                        # gtaProduktSubiekt
     # gt.Autentykacja = 0                   # gtaAutentykacjaSQL
     # gt.Serwer = os.getenv("SFERA_SQL_SERVER", "127.0.0.1\INSERTGT")
@@ -47,7 +51,7 @@ def get_subiekt() -> any:
     # gt.Baza = os.getenv("SFERA_SQL_DB", "sfera_demo")
     gt.Operator = cred_read()[0]
     gt.OperatorHaslo = cred_read()[1]
-    sub = win32.Dispatch(gt.Uruchom(1, 4))
+    sub = Dispatch(gt.Uruchom(1, 4))
     print(f"Subiekt GT Sfera {sub.Aplikacja.Wersja}, " \
           f"baza: {sub.Baza.Nazwa} ({sub.Baza.Serwer})")
     return sub
